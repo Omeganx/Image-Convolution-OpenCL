@@ -1,6 +1,6 @@
 
 const sampler_t sampler_im = CLK_NORMALIZED_COORDS_FALSE |
-                             CLK_ADDRESS_CLAMP_TO_EDGE | CLK_FILTER_NEAREST;
+                            CLK_ADDRESS_CLAMP_TO_EDGE | CLK_FILTER_NEAREST;
 
 #define input(p, r) input[3 * (p.y * width + p.x) + r]
 #define output(p) output[(p.y * width + p.x)]
@@ -30,9 +30,8 @@ __kernel void convolve_gauss_blur_2D_image(__read_only image2d_t srcImg,
 
   int2 coord;
 
-    for (int y = 0; y < 2 * half_size + 1; y++) 
-      for (int x = 0; x < 2 * half_size + 1; x++)
-      {
+  for (int y = 0; y < 2 * half_size + 1; y++)
+    for (int x = 0; x < 2 * half_size + 1; x++) {
       coord = (int2)(pos.x + x - half_size, pos.y + y - half_size);
       sum += filter[y * (2 * half_size + 1) + x] *
              read_imagef(srcImg, sampler_im, coord).x;
@@ -66,8 +65,8 @@ __kernel void convolve_gauss_blur_2D(__global float *output,
 
   if (border) {
 
-  for (int y = 0; y < 2 * half_size + 1; y++)
-    for (int x = 0; x < 2 * half_size + 1; x++)
+    for (int y = 0; y < 2 * half_size + 1; y++)
+      for (int x = 0; x < 2 * half_size + 1; x++)
         sum += filter[y * (2 * half_size + 1) + x] *
                image[(pos.y + y - half_size) * width + x + pos.x - half_size];
   }
@@ -75,6 +74,42 @@ __kernel void convolve_gauss_blur_2D(__global float *output,
   output[pos.y * width + pos.x] = sum;
 }
 
+__kernel void convolve_gauss_blur_2D_cache_image(__write_only image2d_t output,
+                                                 __read_only image2d_t image,
+                                                 __local float *cache,
+                                                 int width, int height,
+                                                 __constant float *filter,
+                                                 int half_size) {
+  int2 pos = {get_global_id(0), get_global_id(1)};
+  int2 loc = {get_local_id(0), get_local_id(1)};
+  int2 size = {get_local_size(0), get_local_size(1)};
+  int2 loc_pos = {get_group_id(0), get_group_id(1)};
+
+  int cache_width = size.x + 2 * half_size;
+  int2 cache_coord = {2 * loc.x, 2 * loc.y};
+  int2 image_coord = cache_coord + loc_pos * size - (int2)(half_size, half_size);
+
+  cache[cache_coord.y * cache_width + cache_coord.x] =
+      read_imagef(image, sampler_im, image_coord).x;
+  cache[cache_coord.y * cache_width + cache_coord.x + 1] =
+      read_imagef(image, sampler_im, image_coord + (int2)(1,0)).x;
+  cache[(cache_coord.y + 1) * cache_width + cache_coord.x] =
+      read_imagef(image, sampler_im, image_coord + (int2)(0,1)).x;
+  cache[(cache_coord.y + 1) * cache_width + cache_coord.x + 1] =
+      read_imagef(image, sampler_im, image_coord + (int2)(1,1)).x;
+
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  float sum = 0.0f;
+  int2 offset = {pos.x - loc_pos.x * size.x, pos.y - loc_pos.y * size.y};
+  int f_size = 2 * half_size + 1;
+  for (int y = 0; y < f_size; y++)
+    for (int x = 0; x < f_size; x++)
+      sum += filter[y * f_size + x] *
+             cache[(offset.y + y) * cache_width + offset.x + x];
+  
+  write_imagef(output, pos, sum);
+}
 __kernel void
 convolve_gauss_blur_2D_cache_2(__global float *output, __global float *image,
                                __local float *cache, int width, int height,
@@ -111,12 +146,10 @@ convolve_gauss_blur_2D_cache_2(__global float *output, __global float *image,
   int position;
   int2 offset = {pos.x - loc_pos.x * size.x, pos.y - loc_pos.y * size.y};
   int f_size = 2 * half_size + 1;
-
   for (int y = 0; y < f_size; y++)
     for (int x = 0; x < f_size; x++)
       sum += filter[y * f_size + x] *
              cache[(offset.y + y) * cache_width + offset.x + x];
-
   output[pos.y * width + pos.x] = sum;
 }
 
@@ -195,6 +228,38 @@ __kernel void convolve_gauss_blur_2D_cache(__global float *output,
   output[pos.y * width + pos.x] = sum;
 }
 
+__kernel void convolve_gauss_blur_1D_pass1_cache_2(__global float *output, __global float *image,
+                   __global float *temp, __local float *cache, int width,
+                   int height, __constant float *filter, int half_size) {
+
+  int2 pos = {get_global_id(0), get_global_id(1)};
+  int2 loc = {get_local_id(0), get_local_id(1)};
+  int2 size = {get_local_size(0), get_local_size(1)};
+  int2 group = {get_group_id(0), get_group_id(1)};
+  bool border = (group.x == 0 || group.x == (get_global_size(0) / size.x) - 1);
+  if (border)
+    return;
+
+  int f_size = 2 * half_size + 1;
+  int cache_coord = 2 * loc.x;
+  int image_coord = cache_coord + size.x * group.x - half_size;
+  cache[loc.y * (size.x + 2 * half_size) + cache_coord] =
+      image[pos.y * width + image_coord];
+  cache[loc.y * (size.x + 2 * half_size) + cache_coord + 1] =
+      image[pos.y * width + image_coord + 1];
+
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  int offset = pos.x - group.x * size.x;
+
+  float sum = 0.0f;
+
+  for (int x = 0; x < f_size; x++)
+    sum += filter[x] * cache[loc.y * (size.x + 2 * half_size) + offset + x];
+
+  temp[pos.y * width + pos.x] = sum;
+}
+
 __kernel void
 convolve_gauss_blur_1D_pass1_cache(__global float *output,
                                    __global float *image, __global float *temp,
@@ -205,35 +270,27 @@ convolve_gauss_blur_1D_pass1_cache(__global float *output,
   int2 loc = {get_local_id(0), get_local_id(1)};
   int2 size = {get_local_size(0), get_local_size(1)};
   int2 group = {get_group_id(0), get_group_id(1)};
-  bool border = (group.x ==0 || group.x == (get_global_size(0) / size.x) - 1);
-  if (border) return;
+  bool border = (group.x == 0 || group.x == (get_global_size(0) / size.x) - 1);
+  if (border)
+    return;
 
   int f_size = 2 * half_size + 1;
 
   int cache_coord = 2 * loc.x;
   int image_coord = cache_coord + size.x * group.x - half_size;
-  //cache[cache_coord] = image[pos.y * width + image_coord];
-  //cache[cache_coord + 1] = image[pos.y * width + image_coord + 1];
+  cache[cache_coord] = image[pos.y * width + image_coord];
+  cache[cache_coord + 1] = image[pos.y * width + image_coord + 1];
 
   barrier(CLK_LOCAL_MEM_FENCE);
   int offset = pos.x - group.x * size.x;
 
-  float sum = 0.0f;
+  float sum = 1.0f;
   for (int x = 0; x < f_size; x++)
     sum += filter[x] * cache[offset + x];
 
   temp[pos.y * width + pos.x] = sum;
 }
 
-__kernel void
-convolve_gauss_blur_1D_pass1_cache_nothing(__global float *output,
-                                   __global float *image, __global float *temp,
-                                   __local float *cache, int width, int height,
-                                   __constant float *filter, int half_size) {
-
-  int2 pos = {get_global_id(0), get_global_id(1)};
-  
-}
 __kernel void convolve_gauss_blur_1D_pass1(__global float *output,
                                            __global float *image,
                                            __global float *temp, int width,
@@ -249,6 +306,7 @@ __kernel void convolve_gauss_blur_1D_pass1(__global float *output,
   int f_size = 2 * half_size + 1;
 
   float sum = 0.0;
+
   for (int x = 0; x < f_size; x++)
     sum += filter[x] * image[pos.y * width + pos.x + x - half_size];
 
