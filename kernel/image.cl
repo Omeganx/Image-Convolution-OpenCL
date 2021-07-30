@@ -225,6 +225,15 @@ convolve_gauss_blur_1D_pass1_cache(__global float *output,
   temp[pos.y * width + pos.x] = sum;
 }
 
+__kernel void
+convolve_gauss_blur_1D_pass1_cache_nothing(__global float *output,
+                                   __global float *image, __global float *temp,
+                                   __local float *cache, int width, int height,
+                                   __constant float *filter, int half_size) {
+
+  int2 pos = {get_global_id(0), get_global_id(1)};
+  
+}
 __kernel void convolve_gauss_blur_1D_pass1(__global float *output,
                                            __global float *image,
                                            __global float *temp, int width,

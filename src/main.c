@@ -145,6 +145,15 @@ int main(int argc, char **argv)
 				&filtr_1d, sizeof(cl_mem),
 				&half_size, sizeof(int));
 
+queueKernel(&handler, "../kernel/image.cl", "convolve_gauss_blur_1D_pass1_cache_nothing", ksize, 8,
+				&outputImage, sizeof(cl_mem),
+				&tempImage, sizeof(cl_mem),
+				&temp, sizeof(cl_mem),
+				NULL, (local2[0]+2*half_size)*sizeof(float),
+				&width, sizeof(int),
+				&height, sizeof(int),
+				&filtr_1d, sizeof(cl_mem),
+				&half_size, sizeof(int));
 	
 	ksize = getKernelSize(2, 0, global, NULL);
 	queueKernel(&handler, "../kernel/image.cl", "convolve_gauss_blur_1D_pass2", ksize, 7,
