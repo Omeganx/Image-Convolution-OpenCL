@@ -1,0 +1,7 @@
+*.sh
+*.o
+main
+TODO.md
+.vscode/
+build/
+ressources/
